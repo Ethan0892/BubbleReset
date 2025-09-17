@@ -1,0 +1,285 @@
+############################################
+# BubbleReset Configuration (new schema)
+############################################
+
+# General plugin settings
+settings:
+  # Should we check for updates on startup?
+  check_for_updates: true
+  # The world that the player will Teleport to once a Reset Happens
+  main_spawn_world: world
+  # If a player quits inside a resource world, Should we teleport him to spawn?
+  teleport_to_spawn_on_quit: true
+  # Sets the format of the remaining time.
+  reset_format: '%days% days %hours% hours %minutes% minutes %seconds% seconds'
+
+# Overworld Settings
+world:
+  enabled: true
+  world_name: resource_world
+  generate_structures: true
+  # Available World Types: NORMAL , FLAT , LARGE_BIOMES , AMPLIFIED
+  world_type: NORMAL
+  # Available Environments: NORMAL , NETHER , THE_END
+  environment: NORMAL
+  custom_seed:
+    enabled: false
+    seed: -686298914
+  world_border:
+    enabled: true
+    size: 4500
+  allow_pvp: true
+  always_day: false
+  disable_suffocation_damage: true
+  difficulty: HARD
+  keep_inventory_on_death: false
+  automated_resets:
+    enabled: true
+    interval: 168
+    store_time_on_shutdown: true
+  commands_after_reset:
+    enabled: false
+    commands:
+      - title @p title {"text":"The Resource World","color":"green"}
+      - title @p subtitle {"text":"Has been Reset!","color":"green"}
+      - chunky radius 2250
+      - chunky start resource_world square
+  disabled_commands:
+    enabled: false
+    commands:
+      - /sethome
+      - /claim
+      - /setwarp
+
+# Nether Settings
+nether:
+  enabled: true
+  world_name: resource_nether
+  generate_structures: true
+  portals:
+    override: false
+    vanilla_portal_ratio: true
+    portal_world: world
+    only_resource: true
+  world_type: NORMAL
+  environment: NETHER
+  custom_seed:
+    enabled: false
+    seed: -686298914
+  world_border:
+    enabled: true
+    size: 4500
+  allow_pvp: true
+  disable_suffocation_damage: true
+  difficulty: NORMAL
+  keep_inventory_on_death: false
+  automated_resets:
+    enabled: true
+    interval: 167
+    store_time_on_shutdown: true
+  commands_after_reset:
+    enabled: false
+    commands:
+      - title @p title {"text":"The Resource Nether","color":"green"}
+      - title @p subtitle {"text":"Has been Reset!","color":"green"}
+      - chunky radius 2250
+      - chunky start resource_nether square
+  disabled_commands:
+    enabled: false
+    commands:
+      - /sethome
+      - /claim
+      - /setwarp
+
+# End Settings
+end:
+  enabled: true
+  world_name: resource_end
+  generate_structures: true
+  portals:
+    override: false
+    portal_world: world
+    only_resource: true
+  world_type: NORMAL
+  environment: THE_END
+  custom_seed:
+    enabled: false
+    seed: -686298914
+  world_border:
+    enabled: true
+    size: 4500
+  allow_pvp: true
+  disable_suffocation_damage: true
+  difficulty: HARD
+  keep_inventory_on_death: false
+  automated_resets:
+    enabled: true
+    interval: 166
+    store_time_on_shutdown: true
+  commands_after_reset:
+    enabled: false
+    commands:
+      - title @p title {"text":"The Resource End","color":"green"}
+      - title @p subtitle {"text":"Has been Reset!","color":"green"}
+      - chunky radius 2250
+      - chunky start resource_end square
+  disabled_commands:
+    enabled: false
+    commands:
+      - /sethome
+      - /claim
+      - /setwarp
+
+# Teleport Settings
+teleport_settings:
+  price: 0
+  cooldown: 300
+  delay: 3
+  world_max_teleport_range: 800
+  nether_max_teleport_range: 800
+  end_max_teleport_range: 800
+  effects:
+    enabled: true
+    effect: ABSORPTION
+    duration: 5
+    amplifier: 2
+  sounds:
+    enabled: true
+    sound: ENTITY_ENDERMAN_TELEPORT
+
+# Performance tuning for resets
+performance:
+  # Minimum TPS required to start the next queued reset
+  tps-threshold: 18.0
+  # Wait this many ticks between queued world resets
+  reset-gap-per-world-ticks: 600
+  # Temporarily reduce distances before unload to cut load
+  temp-view-distance: 4
+  temp-simulation-distance: 4
+  # Delay before unloading a world (ticks) to let teleports settle
+  delay-before-unload-ticks: 100
+  # Schedule Chunky to start after the world is recreated (ticks)
+  schedule-chunky-delay-ticks: 1200
+
+############################################
+# Legacy sections (kept for backward compatibility)
+############################################
+
+worlds:
+  overworld: "resource_world"
+  nether: "resource_nether"
+  end: "resource_end"
+
+auto-reset:
+  enabled: true
+  interval: 86400  # 24 hours in seconds
+  announce-before: 300  # 5 minutes warning
+  announce-start: "&eResource world will reset in %time%!"
+  announce-finish: "&aResource world has been reset!"
+
+world-settings:
+  overworld:
+    enabled: true
+    world-type: "NORMAL"
+    environment: "NORMAL"
+    generate-structures: true
+    seed: ""
+    border-size: 5000
+    spawn-x: 0
+    spawn-y: 100
+    spawn-z: 0
+  nether:
+    enabled: true
+    world-type: "NORMAL"
+    environment: "NETHER"
+    generate-structures: true
+    seed: ""
+    border-size: 5000
+    spawn-x: 0
+    spawn-y: 64
+    spawn-z: 0
+  end:
+    enabled: true
+    world-type: "NORMAL"
+    environment: "THE_END"
+    generate-structures: true
+    seed: ""
+    border-size: 5000
+    spawn-x: 0
+    spawn-y: 64
+    spawn-z: 0
+
+portals:
+  override-nether-portals: false
+  override-end-portals: false
+
+# Game Rules
+gamerules:
+  announceAdvancements: false
+  doDaylightCycle: true
+  doFireTick: true
+  doMobLoot: true
+  doMobSpawning: true
+  doTileDrops: true
+  keepInventory: false
+  mobGriefing: true
+  naturalRegeneration: true
+  randomTickSpeed: 3
+  reducedDebugInfo: false
+  sendCommandFeedback: true
+  showDeathMessages: true
+
+# Messages
+messages:
+  prefix: '&6&lBubble&r&bCraft&r » '
+  update_found: '&aThere is an Update available, Your version &f%current%&a new version &f%new%'
+  disabled_command: '&cSorry, You can''t use that command in this world!'
+  resetting_the_world: '&fCleaning up the Resource World, This may cause Lag!'
+  resetting_the_nether: '&fCleaning up the Nether World, This may cause Lag!'
+  resetting_the_end: '&fCleaning up the End World, This may cause Lag!'
+  world_has_been_reset: '&fThe Resource World has been Reset!'
+  nether_has_been_reset: '&fThe Nether World has been Reset!'
+  end_has_been_reset: '&fThe End World has been Reset!'
+  console_message: '&f&lThis command cannot be executed through the Console :('
+  no_perm: '&cYou do not have permission to execute this command!'
+  cooldown_message: '&cYou can teleport to the Resource World again in %seconds% seconds.'
+  cooldown_spawn: '&cYou can teleport to spawn again in %seconds% seconds.'
+  reloaded: '&fYou have successfully reloaded the plugin!'
+  teleport_delay: '&aTeleporting to the Resource World in %seconds% seconds.'
+  gui_name: '&2&lResource World Menu'
+  worlds_gui_name: '&2&lReset A Resource World'
+  teleported_message: '&fYou have been Teleported back to spawn!'
+  not_exist: '&cThe Resource World is currently under Maintenance, Please try again later!'
+  teleport_paid: '&a%price% &fHave been taken from your balance.'
+  teleport_error: '&cYou do not have enough money to Teleport to the Resource World.'
+  teleported_players: '&aTeleported all the players back to spawn!'
+  update_not_found: '&f&lYou''re running the Latest Version &c&l<3'
+  # Backward-compatible keys used by code paths (content only; prefix applied automatically)
+  teleported: '&aTeleported to the Resource World!'
+  no-permission: '&cYou do not have permission to execute this command!'
+  world-not-found: '&cThe Resource World is currently under Maintenance, Please try again later!'
+  reset-success: '&fThe Resource World has been Reset!'
+  reset-warning: '&eResource world will reset in %time%!'
+  invalid-world: '&cThe Resource World is currently under Maintenance, Please try again later!'
+  config-reloaded: '&fYou have successfully reloaded the plugin!'
+
+# Menu Settings
+menu:
+  title: '<#67E25F>ʀ<#69D75C>ᴇ<#6CCC59>s<#6EC056>ᴏ<#70B553>ᴜ<#72AA50>ʀ<#759F4E>ᴄ<#77934B>ᴇ <#7B7D45>ᴡ<#7E7242>ᴏ<#80663F>ʀ<#825B3C>ʟ<#825B3C>ᴅ<#825B3C>s'
+  rows: 3
+  items:
+    11:
+      material: "PLAYER_HEAD"
+      texture: "eyJ0ZXh0dXJlcyI6eyJTS0lOIjp7InVybCI6Imh0dHA6Ly90ZXh0dXJlcy5taW5lY3JhZnQubmV0L3RleHR1cmUvODlmN2EwNGFjMzM0ZmNhZjYxOGRhOWU4NDFmMDNjMDBkNzQ5MDAyZGM1OTJmODU0MGVmOTUzNDQ0MmNlY2Y0MiJ9fX0="
+      name: '<#83bf61>Overworld'
+      action: "overworld"
+    13:
+      material: "PLAYER_HEAD"
+      texture: "eyJ0ZXh0dXJlcyI6eyJTS0lOIjp7InVybCI6Imh0dHA6Ly90ZXh0dXJlcy5taW5lY3JhZnQubmV0L3RleHR1cmUvOTI5YTliMzQ1YmNjYWIxNzJiYjIxNjMzY2ZjN2MyOGExOTZiMDg5Njk5YzY2YTMzODNjYTY4NjE2OTY2MGNiZiJ9fX0="
+      name: '<#6F4644>Nether'
+      action: "nether"
+    15:
+      material: "PLAYER_HEAD"
+      texture: "eyJ0ZXh0dXJlcyI6eyJTS0lOIjp7InVybCI6Imh0dHA6Ly90ZXh0dXJlcy5taW5lY3JhZnQubmV0L3RleHR1cmUvZTJkZmI0YjBmZWQxODI3YWRhMjkyZmU5MTdmY2E2YWM4MDBhZmNmNTZmOGU0YTI5MGIyYmQ5Y2FhM2ExMmMzNiJ9fX0="
+      name: '<#aa7caa>End'
+      action: "end"

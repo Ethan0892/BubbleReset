@@ -1,0 +1,34 @@
+name: BubbleReset
+main: com.bubblecraft.bubblereset.BubbleReset
+version: 1.0.0
+description: Resource World replacement plugin for Minecraft 1.21.8
+author: eirvi
+api-version: 1.21
+depend: []
+softdepend: [PlaceholderAPI]
+commands:
+  resource:
+    description: Main resource world command - opens menu when used without arguments
+    usage: /resource [tp|menu|reset|reload] [world]
+    aliases: [rw, resourceworld]
+  rwadmin:
+    description: Open BubbleReset admin panel
+    usage: /rwadmin
+    aliases: [rwa]
+permissions:
+  rw.tp:
+    description: Access to teleport to resource world
+    default: true
+  # Legacy nodes no longer required but kept for compatibility
+  rw.tp.nether:
+    description: (Legacy) Access to teleport to resource nether
+    default: true
+  rw.tp.end:
+    description: (Legacy) Access to teleport to resource end
+    default: true
+  rw.admin:
+    description: Access to admin commands
+    default: op
+  rw.menu:
+    description: Access to resource world menu
+    default: true
