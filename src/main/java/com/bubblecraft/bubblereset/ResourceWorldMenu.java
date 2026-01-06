@@ -8,6 +8,7 @@ import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.inventory.Inventory;
+import org.bukkit.inventory.InventoryHolder;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.inventory.meta.SkullMeta;
@@ -16,14 +17,18 @@ import org.bukkit.persistence.PersistentDataContainer;
 import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.profile.PlayerProfile;
 import org.bukkit.profile.PlayerTextures;
+import org.bukkit.ChatColor;
 
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.List;
 import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Method;
 
 public class ResourceWorldMenu implements Listener {
     
@@ -33,13 +38,20 @@ public class ResourceWorldMenu implements Listener {
     public ResourceWorldMenu(BubbleReset plugin) {
         this.plugin = plugin;
     }
+
+    private static final class MenuHolder implements InventoryHolder {
+        @Override
+        public Inventory getInventory() {
+            return null;
+        }
+    }
     
     public void openMenu(Player player) {
     String title = ColorUtil.colorize(plugin.getPluginConfig().getString("menu.title"));
         int rows = plugin.getPluginConfig().getInt("menu.rows", 3);
         int size = rows * 9;
         
-        Inventory menu = Bukkit.createInventory(null, size, title);
+        Inventory menu = Bukkit.createInventory(new MenuHolder(), size, title);
         
         // Get menu items from config
         if (plugin.getPluginConfig().contains("menu.items")) {
@@ -113,32 +125,98 @@ public class ResourceWorldMenu implements Listener {
         
         if (meta != null) {
             try {
-                // Decode the base64 texture
-                String decoded = new String(Base64.getDecoder().decode(textureBase64));
-                
-                // Extract URL from the decoded JSON
-                Pattern urlPattern = Pattern.compile("\"url\":\"([^\"]+)\"");
-                Matcher matcher = urlPattern.matcher(decoded);
-                
-                if (matcher.find()) {
-                    String textureUrl = matcher.group(1);
-                    
-                    // Create player profile with custom texture
+                String texture = textureBase64 == null ? "" : textureBase64.trim();
+                if (!texture.isEmpty()) {
                     PlayerProfile profile = Bukkit.createPlayerProfile(UUID.randomUUID(), "CustomHead");
-                    PlayerTextures textures = profile.getTextures();
-                    textures.setSkin(new URL(textureUrl));
-                    profile.setTextures(textures);
-                    
+
+                    // Support either a direct URL, raw JSON, or the common Base64-encoded "textures" value.
+                    if (texture.startsWith("http://") || texture.startsWith("https://")) {
+                        String url = texture.startsWith("http://textures.minecraft.net/")
+                            ? ("https://" + texture.substring("http://".length()))
+                            : texture;
+                        PlayerTextures textures = profile.getTextures();
+                        textures.setSkin(new URL(url));
+                        profile.setTextures(textures);
+                    } else {
+                        String base64 = texture;
+                        if (texture.startsWith("{")) {
+                            base64 = Base64.getEncoder().encodeToString(texture.getBytes(StandardCharsets.UTF_8));
+                        } else {
+                            // Validate base64 early so we can log clearly if it's invalid
+                            Base64.getDecoder().decode(base64);
+                        }
+
+                        // Prefer setting the raw base64 "textures" property (most reliable; no external fetch).
+                        // The required API type isn't exposed on Bukkit in all versions, so we use reflection.
+                        boolean applied = applyTexturesPropertyReflectively(profile, base64);
+                        if (!applied) {
+                            // Fallback: decode -> URL -> setSkin (may still work if property API isn't present)
+                            String decoded = new String(Base64.getDecoder().decode(base64), StandardCharsets.UTF_8);
+                            Pattern urlPattern = Pattern.compile("\\\"url\\\":\\\"([^\\\"]+)\\\"");
+                            Matcher matcher = urlPattern.matcher(decoded);
+                            if (matcher.find()) {
+                                String textureUrl = matcher.group(1);
+                                if (textureUrl.startsWith("http://textures.minecraft.net/")) {
+                                    textureUrl = "https://" + textureUrl.substring("http://".length());
+                                }
+                                PlayerTextures textures = profile.getTextures();
+                                textures.setSkin(new URL(textureUrl));
+                                profile.setTextures(textures);
+                            }
+                        }
+                    }
+
                     meta.setOwnerProfile(profile);
                 }
             } catch (Exception e) {
-                plugin.getLogger().warning("Failed to set custom skull texture: " + e.getMessage());
+                // MockBukkit doesn't implement parts of the profile/skull API.
+                // Avoid spamming warnings during unit tests while still logging real server failures.
+                String msg = e.getMessage();
+                if (!isMockBukkit() && (msg == null || !msg.equalsIgnoreCase("Not implemented"))) {
+                    plugin.getLogger().warning("Failed to set custom skull texture: " + msg);
+                }
             }
             
             skull.setItemMeta(meta);
         }
         
         return skull;
+    }
+
+    private boolean isMockBukkit() {
+        try {
+            if (Bukkit.getServer() == null) return false;
+            String name = Bukkit.getServer().getName();
+            return name != null && name.toLowerCase().contains("mockbukkit");
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    private boolean applyTexturesPropertyReflectively(PlayerProfile profile, String base64Textures) {
+        String[] candidatePropertyClasses = new String[] {
+            "com.destroystokyo.paper.profile.ProfileProperty",
+            "io.papermc.paper.profile.ProfileProperty"
+        };
+
+        for (String className : candidatePropertyClasses) {
+            try {
+                Class<?> propertyClass = Class.forName(className);
+                Constructor<?> ctor = propertyClass.getConstructor(String.class, String.class);
+                Object prop = ctor.newInstance("textures", base64Textures);
+
+                // Common method name on Paper profile implementations
+                Method m = profile.getClass().getMethod("setProperty", propertyClass);
+                m.invoke(profile, prop);
+                return true;
+            } catch (NoSuchMethodException ignored) {
+                // Try next class name
+            } catch (Throwable ignored) {
+                // Try next class name
+            }
+        }
+
+        return false;
     }
     
     private String translateHexColorCodes(String message) {
@@ -163,9 +241,10 @@ public class ResourceWorldMenu implements Listener {
         if (!(event.getWhoClicked() instanceof Player)) return;
         
         Player player = (Player) event.getWhoClicked();
-    String title = ColorUtil.colorize(plugin.getPluginConfig().getString("menu.title"));
-        
-        if (!event.getView().getTitle().equals(title)) return;
+
+        // Identify our menu by holder rather than relying on title formatting
+        Inventory top = event.getView().getTopInventory();
+        if (top == null || !(top.getHolder() instanceof MenuHolder)) return;
         
         event.setCancelled(true);
         
@@ -179,6 +258,26 @@ public class ResourceWorldMenu implements Listener {
     NamespacedKey key = new NamespacedKey(plugin, "rw_action");
     PersistentDataContainer pdc = meta.getPersistentDataContainer();
     String action = pdc.get(key, PersistentDataType.STRING);
+
+        // Fallback: parse action from lore (helps in environments where PDC is not available)
+        if (action == null) {
+            List<String> lore = meta.getLore();
+            if (lore != null) {
+                for (String line : lore) {
+                    String stripped = ChatColor.stripColor(line);
+                    if (stripped == null) continue;
+                    stripped = stripped.trim();
+                    int idx = stripped.toLowerCase().indexOf("action:");
+                    if (idx >= 0) {
+                        String after = stripped.substring(idx + "action:".length()).trim();
+                        if (!after.isEmpty()) {
+                            action = after.toLowerCase();
+                            break;
+                        }
+                    }
+                }
+            }
+        }
         
         if (action == null) return;
         
@@ -187,6 +286,14 @@ public class ResourceWorldMenu implements Listener {
         if (!player.hasPermission(permission)) {
             player.sendMessage(pref(plugin, "no_perm"));
             return;
+        }
+
+        // Optional per-world teleport toggle
+        if (plugin instanceof BubbleReset) {
+            if (!((BubbleReset) plugin).isTeleportEnabled(action)) {
+                player.sendMessage(pref(plugin, "teleport_disabled"));
+                return;
+            }
         }
         
         teleportToWorld(player, action);

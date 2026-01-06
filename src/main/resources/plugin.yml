@@ -1,9 +1,9 @@
 name: BubbleReset
 main: com.bubblecraft.bubblereset.BubbleReset
-version: 1.0.0
-description: Resource World replacement plugin for Minecraft 1.21.8
+version: ${project.version}
+description: High-Performance Resource World plugin for Minecraft 1.19-1.21
 author: eirvi
-api-version: 1.21
+api-version: 1.19
 depend: []
 softdepend: [PlaceholderAPI]
 commands:

@@ -7,48 +7,142 @@ import org.bukkit.WorldType;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
-import java.util.Deque;
-import java.util.ArrayDeque;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerPortalEvent;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitRunnable;
-    private BukkitTask resetQueueTask;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.GameRule;
 import org.bukkit.WorldBorder;
 import org.bukkit.Location;
-    private final Deque<String> resetQueue = new ArrayDeque<>();
 import org.bukkit.scheduler.BukkitTask;
-import org.bukkit.command.PluginCommand;
-import org.bukkit.BanList;
-    // Start TPS-aware reset queue processor
-    startResetQueueProcessor();
 
 import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.time.LocalTime;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
-        if (resetQueueTask != null) {
-            resetQueueTask.cancel();
-            resetQueueTask = null;
-        }
 import java.util.Set;
-import java.util.Collections;
+import java.util.Deque;
+import java.util.ArrayDeque;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CompletableFuture;
+import java.util.logging.Level;
 
-                    if (elapsed >= intervalSec) {
-                        String worldName = getWorldName(type);
-                        if (worldName != null && Bukkit.getWorld(worldName) != null) {
-                            enqueueReset(type);
-                        }
-                        resetTimers.put(type, now);
-                    }
+public class BubbleReset extends JavaPlugin implements Listener {
+    
+    private FileConfiguration config;
+    private PlaceholderAPIHook placeholderHook;
+    private ResourceWorldMenu menu;
+    private AdminPanel adminPanel;
+    private BukkitTask autoResetTask;
+    private BukkitTask resetQueueTask;
+    private final Map<String, Long> resetTimers = new HashMap<>();
+    // Next scheduled reset time (epoch seconds) per world type
+    private final Map<String, Long> nextResetAt = new ConcurrentHashMap<>();
+    private final Set<String> resetting = new HashSet<>();
+    private final Deque<String> resetQueue = new ArrayDeque<>();
+    
+    // Performance: Cache worlds to avoid repeated lookups
+    private final Map<String, World> worldCache = new ConcurrentHashMap<>();
+    
+    // Performance: Cache frequently accessed config values
+    private final Map<String, Object> configCache = new ConcurrentHashMap<>();
+    
+    // Performance: Track operation metrics
+    private final Map<String, Long> operationTimings = new ConcurrentHashMap<>();
+    private long totalResets = 0;
+    private long totalTeleports = 0;
+
+    // Datapacks: avoid spamming /minecraft:reload
+    private volatile long lastDatapackReloadAtMs = 0L;
+    
+    @Override
+    public void onEnable() {
+        long startTime = System.currentTimeMillis();
+        
         // Save default config
         saveDefaultConfig();
         config = getConfig();
         
+        // Pre-cache frequently accessed config values for performance
+        preCacheConfigValues();
+        
+        // Initialize menu
+        menu = new ResourceWorldMenu(this);
+        adminPanel = new AdminPanel(this);
+        
+        // Register events
+        getServer().getPluginManager().registerEvents(this, this);
+        getServer().getPluginManager().registerEvents(menu, this);
+        getServer().getPluginManager().registerEvents(adminPanel, this);
 
+        // Register tab-completion for /resource
+        if (getCommand("resource") != null) {
+            getCommand("resource").setTabCompleter(new ResourceTabCompleter());
+        }
+        
+        // Setup PlaceholderAPI if available
+        if (Bukkit.getPluginManager().getPlugin("PlaceholderAPI") != null) {
+            placeholderHook = new PlaceholderAPIHook(this);
+            placeholderHook.register();
+        }
+        
+        // Create resource worlds
+        createResourceWorlds();
+        
+        // Start auto-reset scheduler
+        startAutoResetScheduler();
+        
+        // Start TPS-aware reset queue processor
+        startResetQueueProcessor();
+        
+        long loadTime = System.currentTimeMillis() - startTime;
+        getLogger().info("BubbleReset enabled successfully in " + loadTime + "ms!");
+        getLogger().info("Performance mode: Optimized for " + Bukkit.getVersion());
+    }
+    
+    @Override
+    public void onDisable() {
+        if (placeholderHook != null) {
+            placeholderHook.unregister();
+        }
+        if (autoResetTask != null) {
+            autoResetTask.cancel();
+            autoResetTask = null;
+        }
+        if (resetQueueTask != null) {
+            resetQueueTask.cancel();
+            resetQueueTask = null;
+        }
+        
+        // Clear caches
+        worldCache.clear();
+        configCache.clear();
+        
+        // Log performance stats
+        if (config.getBoolean("settings.log-statistics", true)) {
+            getLogger().info("Session Statistics:");
+            getLogger().info("  Total Resets: " + totalResets);
+            getLogger().info("  Total Teleports: " + totalTeleports);
+            if (!operationTimings.isEmpty()) {
+                getLogger().info("  Average Reset Time: " + 
+                    (operationTimings.getOrDefault("reset_total", 0L) / Math.max(1, totalResets)) + "ms");
+            }
+        }
+        
+        getLogger().info("BubbleReset disabled.");
+    }
+    
     private void startResetQueueProcessor() {
         if (resetQueueTask != null) {
             resetQueueTask.cancel();
@@ -90,23 +184,7 @@ import java.util.Collections;
         } catch (Throwable ignored) {}
         return 20.0; // assume good if unavailable
     }
-        // Initialize menu
-        enqueueReset(worldType);
-        sender.sendMessage(prefixed("&aQueued reset for " + worldType + "."));
-    // Register events
-        getServer().getPluginManager().registerEvents(this, this);
-        getServer().getPluginManager().registerEvents(menu, this);
-    getServer().getPluginManager().registerEvents(adminPanel, this);
-
-        // Register tab-completion for /resource
-        if (getCommand("resource") != null) {
-            getCommand("resource").setTabCompleter(new ResourceTabCompleter());
-        }
-        
-        // Setup PlaceholderAPI if available
-        if (Bukkit.getPluginManager().getPlugin("PlaceholderAPI") != null) {
-            placeholderHook = new PlaceholderAPIHook(this);
-
+    
     public void enqueueReset(String worldType) {
         String type = worldType.toLowerCase();
         if (resetting.contains(type)) return;
@@ -115,29 +193,6 @@ import java.util.Collections;
                 resetQueue.addLast(type);
             }
         }
-    }
-            placeholderHook.register();
-        }
-        
-        // Create resource worlds
-        createResourceWorlds();
-        
-    // Start auto-reset scheduler
-    startAutoResetScheduler();
-        
-    getLogger().info("BubbleReset enabled successfully!");
-    }
-    
-    @Override
-    public void onDisable() {
-        if (placeholderHook != null) {
-            placeholderHook.unregister();
-        }
-        if (autoResetTask != null) {
-            autoResetTask.cancel();
-            autoResetTask = null;
-        }
-        getLogger().info("BubbleReset disabled.");
     }
     
     private void createResourceWorlds() {
@@ -166,6 +221,7 @@ import java.util.Collections;
                 World world = Bukkit.createWorld(wc);
                 if (world != null) {
                     setupWorld(world, type);
+                    applyDatapacksIfEnabled(world, type);
                     getLogger().info("Created resource world: " + worldName);
                 }
             } else {
@@ -238,6 +294,44 @@ import java.util.Collections;
                     String type = types[i];
                     if (!isWorldEnabled(type)) continue;
                     // Determine interval (seconds)
+
+                    // Fixed time-of-day scheduling (preferred if configured)
+                    String timeOfDay = getResetTimeOfDay(type);
+                    if (timeOfDay != null && !timeOfDay.isEmpty()) {
+                        long nextAt = nextResetAt.getOrDefault(type, 0L);
+                        if (nextAt <= 0L) {
+                            nextAt = computeNextTimeOfDayResetEpochSec(timeOfDay, now);
+                            nextResetAt.put(type, nextAt);
+                            // Track a "last" time to keep existing tooling stable
+                            if (resetTimers.getOrDefault(type, 0L) == 0L) resetTimers.put(type, now);
+                        }
+
+                        long remaining = nextAt - now;
+                        if (remaining <= announceBeforeSec && remaining > 0L) {
+                            String warn = config.getString("messages.reset-warning", "&eResource world will reset in %time%!")
+                                .replace("%time%", formatTime(remaining));
+                            Bukkit.broadcastMessage(prefixed(warn));
+                        }
+
+                        if (now >= nextAt) {
+                            String worldName = getWorldName(type);
+                            if (worldName != null && Bukkit.getWorld(worldName) != null) {
+                                new BukkitRunnable() {
+                                    @Override
+                                    public void run() {
+                                        resetWorld(worldName, type);
+                                    }
+                                }.runTaskLater(BubbleReset.this, i * 200L); // stagger by 10s per world
+                            }
+                            // Mark last reset time
+                            resetTimers.put(type, now);
+                            // Schedule the next occurrence
+                            nextResetAt.put(type, computeNextTimeOfDayResetEpochSec(timeOfDay, now + 1L));
+                        }
+                        continue;
+                    }
+
+                    // Interval-based scheduling (fallback)
                     long intervalSec = getResetIntervalSeconds(type);
                     if (intervalSec <= 0) intervalSec = globalIntervalSec;
                     if (intervalSec <= 0) continue; // no scheduler
@@ -269,6 +363,30 @@ import java.util.Collections;
                 }
             }
         }.runTaskTimer(this, 1200L, 1200L);
+    }
+
+    private String getResetTimeOfDay(String type) {
+        String base = sectionFor(type) + ".automated_resets";
+        String v = config.getString(base + ".time_of_day", "");
+        return v == null ? "" : v.trim();
+    }
+
+    private long computeNextTimeOfDayResetEpochSec(String timeOfDay, long nowEpochSec) {
+        // Expect HH:mm in server timezone
+        try {
+            LocalTime target = LocalTime.parse(timeOfDay, DateTimeFormatter.ofPattern("HH:mm"));
+            ZoneId zone = ZoneId.systemDefault();
+            ZonedDateTime now = ZonedDateTime.ofInstant(java.time.Instant.ofEpochSecond(nowEpochSec), zone);
+            ZonedDateTime candidate = now.with(target);
+            if (!candidate.isAfter(now)) {
+                candidate = candidate.plusDays(1);
+            }
+            return candidate.toEpochSecond();
+        } catch (DateTimeParseException e) {
+            getLogger().warning("Invalid automated_resets.time_of_day format: '" + timeOfDay + "' (expected HH:mm)");
+            // Disable fixed-time behavior by returning 0, caller will fall back to interval
+            return 0L;
+        }
     }
     
     @Override
@@ -320,35 +438,70 @@ import java.util.Collections;
         }
         
         Player player = (Player) sender;
-    String worldType = args.length > 1 ? args[1].toLowerCase() : "overworld";
+        String worldType = args.length > 1 ? args[1].toLowerCase() : "overworld";
+        long startTime = System.currentTimeMillis();
+
+        if (!isTeleportEnabled(worldType)) {
+            player.sendMessage(msgOrDefault("teleport_disabled", "&cTeleport to this world is currently disabled."));
+            return true;
+        }
         
-    // Single permission for all resource world teleports
-    if (!player.hasPermission("rw.tp")) {
+        // Single permission for all resource world teleports
+        if (!player.hasPermission("rw.tp")) {
             player.sendMessage(msg("no_perm"));
             return true;
         }
         
-    String worldName = getWorldName(worldType);
+        String worldName = getWorldName(worldType);
         if (worldName == null) {
-        player.sendMessage(msg("not_exist"));
+            player.sendMessage(msg("not_exist"));
             return true;
         }
         
-    World world = getOrCreateWorld(worldType);
+        // Use cached world lookup for better performance
+        World world = getCachedWorld(worldName);
         if (world == null) {
-        player.sendMessage(msg("not_exist"));
+            world = getOrCreateWorld(worldType);
+        }
+        
+        if (world == null) {
+            player.sendMessage(msg("not_exist"));
             return true;
         }
         
-    Location safe;
-    if ("nether".equalsIgnoreCase(worldType)) {
-        safe = TeleportUtil.randomSafeLocationInNether(world);
-    } else {
-        safe = TeleportUtil.randomSafeLocation(world);
-    }
-    player.teleport(safe);
-    player.sendMessage(msgOrDefault("teleported", "&aTeleported to the Resource World!"));
+        // Find safe location
+        Location safe;
+        if ("nether".equalsIgnoreCase(worldType)) {
+            safe = TeleportUtil.randomSafeLocationInNether(world);
+        } else {
+            safe = TeleportUtil.randomSafeLocation(world);
+        }
         
+        // Pre-load chunks asynchronously for smooth teleportation
+        preloadChunksAsync(safe);
+        
+        // Teleport with a small delay to let chunks load
+        int delay = getCachedConfig("teleport_settings.delay", 3);
+        Bukkit.getScheduler().runTaskLater(this, () -> {
+            player.teleport(safe);
+            player.sendMessage(msgOrDefault("teleported", "&aTeleported to the Resource World!"));
+            incrementTeleports();
+            trackOperationTime("teleport_" + worldType, startTime);
+        }, delay * 20L);
+        
+        if (delay > 0) {
+            player.sendMessage(msgOrDefault("teleport_delay", "&aTeleporting in " + delay + " seconds...")
+                .replace("%seconds%", String.valueOf(delay)));
+        }
+        
+        return true;
+    }
+
+    public boolean isTeleportEnabled(String type) {
+        String section = sectionFor(type);
+        if (config.isSet(section + ".teleport_enabled")) {
+            return config.getBoolean(section + ".teleport_enabled", true);
+        }
         return true;
     }
     
@@ -394,22 +547,43 @@ import java.util.Collections;
             return true;
         }
         
+        long startTime = System.currentTimeMillis();
+        
         reloadConfig();
         config = getConfig();
-    sender.sendMessage(msgOrDefault("reloaded", "&fYou have successfully reloaded the plugin!"));
+        
+        // Clear and rebuild config cache
+        configCache.clear();
+        preCacheConfigValues();
+        
+        long reloadTime = System.currentTimeMillis() - startTime;
+        sender.sendMessage(msgOrDefault("reloaded", "&fYou have successfully reloaded the plugin!"));
+        sender.sendMessage(prefixed("&aReload completed in " + reloadTime + "ms"));
+        
         return true;
     }
     
     public void resetWorld(String worldName, String worldType) {
+        long resetStartTime = System.currentTimeMillis();
+        
         // Prevent overlapping resets for the same world type
         if (!resetting.add(worldType.toLowerCase())) {
             return;
         }
-        World world = Bukkit.getWorld(worldName);
+        
+        World world = getCachedWorld(worldName);
         if (world != null) {
             // Broadcast start message
             String startKey = getResettingKey(worldType);
             Bukkit.broadcastMessage(msgOrDefault(startKey, defaultStart(worldType)));
+            
+            // Performance: Reduce view distance temporarily if configured
+            int originalViewDistance = world.getViewDistance();
+            int tempViewDistance = config.getInt("performance.temp-view-distance", 4);
+            if (tempViewDistance > 0 && tempViewDistance < originalViewDistance) {
+                world.setViewDistance(tempViewDistance);
+            }
+            
             // Teleport all players out of the world
             Location mainWorldSpawn = getMainSpawn();
             int moved = 0;
@@ -419,31 +593,40 @@ import java.util.Collections;
                 moved++;
             }
             if (moved > 0) Bukkit.broadcastMessage(msgOrDefault("teleported_players", "&aTeleported all the players back to spawn!"));
+            
+            // Clear world from cache before unload
+            clearWorldCache(worldName);
+            
             // Unload the world (no save) to release files
             try { world.setAutoSave(false); } catch (Throwable ignored) {}
             Bukkit.unloadWorld(world, false);
-            // Delete the world folder asynchronously with a short delay and retries, then recreate on main thread
+            
+            // Delete the world folder asynchronously with retries using CompletableFuture
             File toDelete = world.getWorldFolder();
-            Bukkit.getScheduler().runTaskLaterAsynchronously(this, () -> {
+            CompletableFuture.runAsync(() -> {
                 for (int i = 0; i < 3; i++) {
                     deleteWorldFolder(toDelete);
                     if (!toDelete.exists()) break;
                     try { Thread.sleep(500); } catch (InterruptedException ignored) {}
                 }
-                Bukkit.getScheduler().runTask(this, () -> recreateWorld(worldName, worldType));
-            }, 100L); // ~5s
+            }).thenRunAsync(() -> {
+                // Schedule recreation on main thread
+                Bukkit.getScheduler().runTask(this, () -> {
+                    recreateWorld(worldName, worldType, resetStartTime);
+                });
+            });
             return;
         }
         // If world was already absent, just create it
-        recreateWorld(worldName, worldType);
+        recreateWorld(worldName, worldType, resetStartTime);
     }
 
-    private void recreateWorld(String worldName, String worldType) {
-    WorldCreator wc = new WorldCreator(worldName);
-    wc.type(WorldType.valueOf(getWorldType(worldType)));
-    wc.environment(World.Environment.valueOf(getEnvironment(worldType)));
+    private void recreateWorld(String worldName, String worldType, long resetStartTime) {
+        WorldCreator wc = new WorldCreator(worldName);
+        wc.type(WorldType.valueOf(getWorldType(worldType)));
+        wc.environment(World.Environment.valueOf(getEnvironment(worldType)));
 
-    String seed = getSeed(worldType);
+        String seed = getSeed(worldType);
         if (seed != null && !seed.isEmpty()) {
             try {
                 wc.seed(Long.parseLong(seed));
@@ -452,15 +635,23 @@ import java.util.Collections;
             }
         }
 
-    wc.generateStructures(getGenerateStructures(worldType));
+        wc.generateStructures(getGenerateStructures(worldType));
 
         World newWorld = Bukkit.createWorld(wc);
-    if (newWorld != null) {
+        if (newWorld != null) {
+            // Add to cache
+            worldCache.put(worldName, newWorld);
+            
             setupWorld(newWorld, worldType);
+
+            // Copy datapacks (custom structures/loot) if configured
+            applyDatapacksIfEnabled(newWorld, worldType);
+            
             // Execute commands_after_reset if configured (new schema)
             for (String cmd : getPostResetCommands(worldType)) {
                 Bukkit.dispatchCommand(Bukkit.getConsoleSender(), cmd);
             }
+            
             // Optionally run Chunky to pre-generate after reset for performance
             if (getServer().getPluginManager().getPlugin("Chunky") != null && config.getBoolean("chunky.enabled", false)) {
                 boolean syncToBorder = config.getBoolean("chunky.sync-to-border", true);
@@ -478,12 +669,122 @@ import java.util.Collections;
                     }
                 }.runTaskLater(this, Math.max(0L, chunkyDelay));
             }
+            
             // Broadcast finish message
             String doneKey = getFinishedKey(worldType);
             Bukkit.broadcastMessage(msgOrDefault(doneKey, defaultFinish(worldType)));
+            
+            // Track performance
+            totalResets++;
+            trackOperationTime("reset_" + worldType, resetStartTime);
+            long resetDuration = System.currentTimeMillis() - resetStartTime;
+            if (config.getBoolean("settings.log-reset-times", true)) {
+                getLogger().info("Reset completed for " + worldType + " in " + resetDuration + "ms");
+            }
         }
+        
         // Clear resetting flag at the very end of recreation
         resetting.remove(worldType.toLowerCase());
+    }
+
+    private void applyDatapacksIfEnabled(World world, String worldType) {
+        if (world == null) return;
+        if (!config.getBoolean("datapacks.enabled", false)) return;
+
+        String typeKey = worldType == null ? "" : worldType.toLowerCase();
+        boolean apply = config.getBoolean("datapacks.apply_to." + typeKey, true);
+        if (!apply) return;
+
+        File sourceDir = getDatapacksSourceDir();
+        if (sourceDir == null || !sourceDir.isDirectory()) {
+            getLogger().warning("Datapacks are enabled but source folder is missing: " +
+                (sourceDir == null ? "<null>" : sourceDir.getPath()));
+            return;
+        }
+
+        File worldFolder = world.getWorldFolder();
+        if (worldFolder == null) return;
+
+        File targetDir = new File(worldFolder, "datapacks");
+
+        // Copy asynchronously to avoid blocking the server thread
+        CompletableFuture.runAsync(() -> {
+            try {
+                copyDirectory(sourceDir.toPath(), targetDir.toPath());
+            } catch (IOException e) {
+                getLogger().log(Level.WARNING, "Failed to copy datapacks to world '" + world.getName() + "'", e);
+            }
+        }).thenRun(() -> {
+            if (!config.getBoolean("datapacks.run_minecraft_reload", true)) return;
+            long cooldownMs = Math.max(0L, config.getLong("datapacks.reload_cooldown_ms", 10_000L));
+            long now = System.currentTimeMillis();
+            if (now - lastDatapackReloadAtMs < cooldownMs) return;
+            lastDatapackReloadAtMs = now;
+
+            Bukkit.getScheduler().runTask(this, () -> {
+                try {
+                    Bukkit.dispatchCommand(Bukkit.getConsoleSender(), "minecraft:reload");
+                } catch (Throwable t) {
+                    getLogger().log(Level.WARNING, "Failed to dispatch minecraft:reload after datapack copy", t);
+                }
+            });
+        });
+    }
+
+    private File getDatapacksSourceDir() {
+        String raw = config.getString("datapacks.source", "world:" + config.getString("settings.main_spawn_world", "world"));
+        if (raw == null) return null;
+        raw = raw.trim();
+        File worldContainer = getServer().getWorldContainer();
+
+        if (raw.regionMatches(true, 0, "world:", 0, "world:".length())) {
+            String worldName = raw.substring("world:".length()).trim();
+            if (worldName.isEmpty()) return null;
+            return new File(new File(worldContainer, worldName), "datapacks");
+        }
+
+        if (raw.regionMatches(true, 0, "folder:", 0, "folder:".length())) {
+            String path = raw.substring("folder:".length()).trim();
+            if (path.isEmpty()) return null;
+            File f = new File(path);
+            if (!f.isAbsolute()) {
+                f = new File(worldContainer, path);
+            }
+            return f;
+        }
+
+        // Backward/forgiving: treat as folder path
+        File f = new File(raw);
+        if (!f.isAbsolute()) {
+            f = new File(worldContainer, raw);
+        }
+        return f;
+    }
+
+    private static void copyDirectory(Path source, Path target) throws IOException {
+        if (!Files.exists(source)) return;
+        Files.createDirectories(target);
+        try (var stream = Files.walk(source)) {
+            stream.forEach(src -> {
+                try {
+                    Path rel = source.relativize(src);
+                    Path dst = target.resolve(rel);
+                    if (Files.isDirectory(src)) {
+                        Files.createDirectories(dst);
+                    } else {
+                        Files.createDirectories(dst.getParent());
+                        Files.copy(src, dst, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.COPY_ATTRIBUTES);
+                    }
+                } catch (IOException e) {
+                    throw new RuntimeException(e);
+                }
+            });
+        } catch (RuntimeException e) {
+            if (e.getCause() instanceof IOException) {
+                throw (IOException) e.getCause();
+            }
+            throw e;
+        }
     }
 
     public World getOrCreateWorld(String worldType) {
@@ -745,5 +1046,157 @@ import java.util.Collections;
             if (w != null) return w.getSpawnLocation();
         }
         return Bukkit.getWorlds().get(0).getSpawnLocation();
+    }
+    
+    // =========================
+    // Performance Optimization Methods
+    // =========================
+    
+    /**
+     * Pre-cache frequently accessed config values to reduce I/O operations
+     */
+    private void preCacheConfigValues() {
+        String[] worldTypes = {"overworld", "nether", "end"};
+        for (String type : worldTypes) {
+            String section = sectionFor(type);
+            // Cache world names
+            configCache.put(section + ".world_name", config.getString(section + ".world_name"));
+            // Cache enabled status
+            configCache.put(section + ".enabled", config.getBoolean(section + ".enabled", true));
+            // Cache border sizes
+            if (config.isSet(section + ".world_border.size")) {
+                configCache.put(section + ".border_size", config.getInt(section + ".world_border.size", 1000));
+            }
+        }
+        // Cache performance settings
+        configCache.put("performance.tps-threshold", config.getDouble("performance.tps-threshold", 18.0));
+        configCache.put("teleport_settings.cooldown", config.getInt("teleport_settings.cooldown", 300));
+        configCache.put("teleport_settings.delay", config.getInt("teleport_settings.delay", 3));
+        
+        getLogger().info("Config cache initialized with " + configCache.size() + " entries");
+    }
+    
+    /**
+     * Get world from cache or load and cache it
+     * @param worldName World name
+     * @return World instance or null
+     */
+    private World getCachedWorld(String worldName) {
+        if (worldName == null) return null;
+        
+        // Check cache first
+        World cached = worldCache.get(worldName);
+        if (cached != null && cached.getWorldFolder().exists()) {
+            return cached;
+        }
+        
+        // Load from Bukkit and cache
+        World world = Bukkit.getWorld(worldName);
+        if (world != null) {
+            worldCache.put(worldName, world);
+        } else {
+            // Remove from cache if world no longer exists
+            worldCache.remove(worldName);
+        }
+        
+        return world;
+    }
+    
+    /**
+     * Clear world cache entry (call after world reset)
+     */
+    private void clearWorldCache(String worldName) {
+        worldCache.remove(worldName);
+    }
+    
+    /**
+     * Pre-load chunks around a location asynchronously for smooth teleportation
+     * @param location Target location
+     */
+    private void preloadChunksAsync(Location location) {
+        if (location == null || location.getWorld() == null) return;
+        
+        World world = location.getWorld();
+        int chunkX = location.getBlockX() >> 4;
+        int chunkZ = location.getBlockZ() >> 4;
+        int radius = config.getInt("performance.preload-chunk-radius", 2);
+        
+        CompletableFuture.runAsync(() -> {
+            for (int x = -radius; x <= radius; x++) {
+                for (int z = -radius; z <= radius; z++) {
+                    final int cx = chunkX + x;
+                    final int cz = chunkZ + z;
+                    // Schedule chunk load on main thread
+                    Bukkit.getScheduler().runTask(this, () -> {
+                        if (world.isChunkLoaded(cx, cz)) return;
+                        world.getChunkAtAsync(cx, cz);
+                    });
+                }
+            }
+        });
+    }
+    
+    /**
+     * Get cached config value or fetch from config
+     */
+    @SuppressWarnings("unchecked")
+    private <T> T getCachedConfig(String path, T defaultValue) {
+        Object cached = configCache.get(path);
+        if (cached != null) {
+            try {
+                return (T) cached;
+            } catch (ClassCastException e) {
+                getLogger().warning("Config cache type mismatch for: " + path);
+            }
+        }
+        
+        // Fetch from config and cache
+        Object value = config.get(path, defaultValue);
+        if (value != null) {
+            configCache.put(path, value);
+        }
+        
+        return (T) value;
+    }
+    
+    /**
+     * Track operation timing for performance monitoring
+     */
+    private void trackOperationTime(String operation, long startTime) {
+        long duration = System.currentTimeMillis() - startTime;
+        operationTimings.merge(operation, duration, Long::sum);
+        
+        // Log slow operations
+        long slowThreshold = config.getLong("performance.slow-operation-threshold-ms", 5000);
+        if (duration > slowThreshold) {
+            getLogger().warning("Slow operation detected: " + operation + " took " + duration + "ms");
+        }
+    }
+    
+    /**
+     * Increment teleport counter for statistics
+     */
+    public void incrementTeleports() {
+        totalTeleports++;
+    }
+    
+    /**
+     * Get performance statistics as a formatted string
+     */
+    public String getPerformanceStats() {
+        StringBuilder stats = new StringBuilder();
+        stats.append("Performance Statistics:\n");
+        stats.append("  Total Resets: ").append(totalResets).append("\n");
+        stats.append("  Total Teleports: ").append(totalTeleports).append("\n");
+        stats.append("  Cached Worlds: ").append(worldCache.size()).append("\n");
+        stats.append("  Config Cache Size: ").append(configCache.size()).append("\n");
+        
+        if (!operationTimings.isEmpty()) {
+            stats.append("  Operation Timings:\n");
+            operationTimings.forEach((op, time) -> 
+                stats.append("    ").append(op).append(": ").append(time).append("ms\n"));
+        }
+        
+        return stats.toString();
     }
 }

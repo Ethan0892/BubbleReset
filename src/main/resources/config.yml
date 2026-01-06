@@ -2,6 +2,17 @@
 # BubbleReset Configuration (new schema)
 ############################################
 
+# NOTE ABOUT TELEPORTS / PERMISSIONS (common confusion)
+# - BubbleReset ships with a default config so `/resource` works out-of-the-box.
+# - The GUI menu is clickable; clicking Overworld/Nether/End teleports you.
+# - By default, players DO NOT need OP because the permissions are set to allow it:
+#     - `rw.menu` (open the /resource menu) defaults to true
+#     - `rw.tp`   (teleport via menu or /resource tp) defaults to true
+#   To restrict access, change permissions with your permission plugin.
+# - Setting `nether.enabled: false` / `end.enabled: false` only disables the RESET logic
+#   (and auto-creation on startup). It does NOT disable the teleport button by itself.
+#   If you want to prevent teleporting, revoke `rw.tp` and/or remove the menu item.
+
 # General plugin settings
 settings:
   # Should we check for updates on startup?
@@ -12,10 +23,19 @@ settings:
   teleport_to_spawn_on_quit: true
   # Sets the format of the remaining time.
   reset_format: '%days% days %hours% hours %minutes% minutes %seconds% seconds'
+  # Log performance statistics on shutdown
+  log-statistics: true
+  # Log individual reset completion times
+  log-reset-times: true
 
 # Overworld Settings
 world:
+  # Enables/disables the reset/auto-create logic for this dimension.
+  # This does NOT block teleports if a player has `rw.tp`.
   enabled: true
+  # Enables/disables TELEPORTS to this world via `/resource tp` and the `/resource` GUI.
+  # Permission `rw.tp` is still required, but this toggle hard-disables teleports per world.
+  teleport_enabled: true
   world_name: resource_world
   generate_structures: true
   # Available World Types: NORMAL , FLAT , LARGE_BIOMES , AMPLIFIED
@@ -36,6 +56,10 @@ world:
   automated_resets:
     enabled: true
     interval: 168
+    # Optional: reset at a specific time of day instead of “X hours since last reset”.
+    # Format: "HH:mm" in your SERVER timezone (example: "02:00" for 2am).
+    # When set, this takes priority over `interval`.
+    time_of_day: ""
     store_time_on_shutdown: true
   commands_after_reset:
     enabled: false
@@ -53,7 +77,12 @@ world:
 
 # Nether Settings
 nether:
+  # Enables/disables the reset/auto-create logic for this dimension.
+  # IMPORTANT: this does NOT disable the Nether teleport button in `/resource`.
+  # To prevent players from teleporting: revoke `rw.tp` and/or remove the Nether menu item.
   enabled: true
+  # Enables/disables TELEPORTS to this world via `/resource tp` and the `/resource` GUI.
+  teleport_enabled: true
   world_name: resource_nether
   generate_structures: true
   portals:
@@ -76,6 +105,10 @@ nether:
   automated_resets:
     enabled: true
     interval: 167
+    # Optional: reset at a specific time of day instead of “X hours since last reset”.
+    # Format: "HH:mm" in your SERVER timezone (example: "02:00" for 2am).
+    # When set, this takes priority over `interval`.
+    time_of_day: ""
     store_time_on_shutdown: true
   commands_after_reset:
     enabled: false
@@ -93,7 +126,11 @@ nether:
 
 # End Settings
 end:
+  # Enables/disables the reset/auto-create logic for this dimension.
+  # This does NOT disable the End teleport button in `/resource`.
   enabled: true
+  # Enables/disables TELEPORTS to this world via `/resource tp` and the `/resource` GUI.
+  teleport_enabled: true
   world_name: resource_end
   generate_structures: true
   portals:
@@ -115,6 +152,10 @@ end:
   automated_resets:
     enabled: true
     interval: 166
+    # Optional: reset at a specific time of day instead of “X hours since last reset”.
+    # Format: "HH:mm" in your SERVER timezone (example: "02:00" for 2am).
+    # When set, this takes priority over `interval`.
+    time_of_day: ""
     store_time_on_shutdown: true
   commands_after_reset:
     enabled: false
@@ -160,6 +201,28 @@ performance:
   delay-before-unload-ticks: 100
   # Schedule Chunky to start after the world is recreated (ticks)
   schedule-chunky-delay-ticks: 1200
+  # Chunk radius to pre-load around teleport destination (0 = disabled)
+  preload-chunk-radius: 2
+  # Log warning if operation takes longer than this (milliseconds)
+  slow-operation-threshold-ms: 5000
+
+# Datapacks (custom structures / loot tables)
+# When enabled, BubbleReset will copy datapacks into freshly created resource worlds
+# and optionally run `/minecraft:reload` so the server picks them up.
+datapacks:
+  enabled: false
+  # Where to copy datapacks from:
+  # - "world:<worldName>"  -> copies <server>/<worldName>/datapacks
+  # - "folder:<path>"      -> absolute or relative to the server root
+  source: "world:world"
+  apply_to:
+    overworld: true
+    nether: true
+    end: true
+  # Run `/minecraft:reload` after copying (recommended for loot/structures)
+  run_minecraft_reload: true
+  # Prevent spamming reload if multiple worlds reset close together
+  reload_cooldown_ms: 10000
 
 ############################################
 # Legacy sections (kept for backward compatibility)
@@ -252,6 +315,7 @@ messages:
   not_exist: '&cThe Resource World is currently under Maintenance, Please try again later!'
   teleport_paid: '&a%price% &fHave been taken from your balance.'
   teleport_error: '&cYou do not have enough money to Teleport to the Resource World.'
+  teleport_disabled: '&cTeleport to this world is currently disabled.'
   teleported_players: '&aTeleported all the players back to spawn!'
   update_not_found: '&f&lYou''re running the Latest Version &c&l<3'
   # Backward-compatible keys used by code paths (content only; prefix applied automatically)
@@ -265,21 +329,28 @@ messages:
 
 # Menu Settings
 menu:
+  # `/resource` without args opens this menu (requires permission `rw.menu`).
+  # Clicking a world item teleports (requires permission `rw.tp`).
   title: '<#67E25F>ʀ<#69D75C>ᴇ<#6CCC59>s<#6EC056>ᴏ<#70B553>ᴜ<#72AA50>ʀ<#759F4E>ᴄ<#77934B>ᴇ <#7B7D45>ᴡ<#7E7242>ᴏ<#80663F>ʀ<#825B3C>ʟ<#825B3C>ᴅ<#825B3C>s'
   rows: 3
   items:
     11:
       material: "PLAYER_HEAD"
+      # Custom head texture.
+      # Recommended: Base64 of the "textures" JSON value (common format from head databases).
+      # Also supported: a direct URL to https://minecraft-heads.com.
       texture: "eyJ0ZXh0dXJlcyI6eyJTS0lOIjp7InVybCI6Imh0dHA6Ly90ZXh0dXJlcy5taW5lY3JhZnQubmV0L3RleHR1cmUvODlmN2EwNGFjMzM0ZmNhZjYxOGRhOWU4NDFmMDNjMDBkNzQ5MDAyZGM1OTJmODU0MGVmOTUzNDQ0MmNlY2Y0MiJ9fX0="
       name: '<#83bf61>Overworld'
       action: "overworld"
     13:
       material: "PLAYER_HEAD"
+      # Custom head texture (Base64 "textures" value or https://minecraft-heads.com URL)
       texture: "eyJ0ZXh0dXJlcyI6eyJTS0lOIjp7InVybCI6Imh0dHA6Ly90ZXh0dXJlcy5taW5lY3JhZnQubmV0L3RleHR1cmUvOTI5YTliMzQ1YmNjYWIxNzJiYjIxNjMzY2ZjN2MyOGExOTZiMDg5Njk5YzY2YTMzODNjYTY4NjE2OTY2MGNiZiJ9fX0="
       name: '<#6F4644>Nether'
       action: "nether"
     15:
       material: "PLAYER_HEAD"
+      # Custom head texture (Base64 "textures" value or https://minecraft-heads.com URL)
       texture: "eyJ0ZXh0dXJlcyI6eyJTS0lOIjp7InVybCI6Imh0dHA6Ly90ZXh0dXJlcy5taW5lY3JhZnQubmV0L3RleHR1cmUvZTJkZmI0YjBmZWQxODI3YWRhMjkyZmU5MTdmY2E2YWM4MDBhZmNmNTZmOGU0YTI5MGIyYmQ5Y2FhM2ExMmMzNiJ9fX0="
       name: '<#aa7caa>End'
       action: "end"
