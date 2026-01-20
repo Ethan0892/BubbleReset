@@ -86,9 +86,13 @@ public class BubbleReset extends JavaPlugin implements Listener {
         getServer().getPluginManager().registerEvents(menu, this);
         getServer().getPluginManager().registerEvents(adminPanel, this);
 
-        // Register tab-completion for /resource
+        // Register tab-completion
+        ResourceTabCompleter tabCompleter = new ResourceTabCompleter();
         if (getCommand("resource") != null) {
-            getCommand("resource").setTabCompleter(new ResourceTabCompleter());
+            getCommand("resource").setTabCompleter(tabCompleter);
+        }
+        if (getCommand("rwadmin") != null) {
+            getCommand("rwadmin").setTabCompleter(tabCompleter);
         }
         
         // Setup PlaceholderAPI if available
@@ -392,17 +396,37 @@ public class BubbleReset extends JavaPlugin implements Listener {
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
         if (command.getName().equalsIgnoreCase("rwadmin")) {
-            if (!(sender instanceof Player)) {
-                sender.sendMessage(msg("console_message"));
+            if (!sender.hasPermission("rw.admin")) {
+                sender.sendMessage(msg("no_perm"));
                 return true;
             }
-            Player p = (Player) sender;
-            if (!p.hasPermission("rw.admin")) {
-                p.sendMessage(msg("no_perm"));
+            
+            // Handle subcommands
+            if (args.length == 0) {
+                if (!(sender instanceof Player)) {
+                    sender.sendMessage(prefixed(ColorUtil.colorize("&e/rwadmin <panel|reload|test>")));
+                    return true;
+                }
+                adminPanel.open((Player) sender);
                 return true;
             }
-            adminPanel.open(p);
-            return true;
+            
+            switch (args[0].toLowerCase()) {
+                case "panel":
+                    if (!(sender instanceof Player)) {
+                        sender.sendMessage(msg("console_message"));
+                        return true;
+                    }
+                    adminPanel.open((Player) sender);
+                    return true;
+                case "reload":
+                    return handleReload(sender);
+                case "test":
+                    return handleTest(sender, args);
+                default:
+                    sender.sendMessage(prefixed(ColorUtil.colorize("&e/rwadmin <panel|reload|test> [feature]")));
+                    return true;
+            }
         }
         if (!command.getName().equalsIgnoreCase("resource")) return false;
         
@@ -548,18 +572,137 @@ public class BubbleReset extends JavaPlugin implements Listener {
         }
         
         long startTime = System.currentTimeMillis();
+        sender.sendMessage(prefixed(ColorUtil.colorize("&eReloading BubbleReset...")));
         
         reloadConfig();
         config = getConfig();
         
-        // Clear and rebuild config cache
+        // Clear all caches
         configCache.clear();
+        worldCache.clear();
         preCacheConfigValues();
         
-        long reloadTime = System.currentTimeMillis() - startTime;
-        sender.sendMessage(msgOrDefault("reloaded", "&fYou have successfully reloaded the plugin!"));
-        sender.sendMessage(prefixed("&aReload completed in " + reloadTime + "ms"));
+        // Clear reset timers so time_of_day changes take effect immediately
+        int clearedTimers = resetTimers.size();
+        resetTimers.clear();
         
+        // Restart auto-reset scheduler with new config
+        if (autoResetTask != null) {
+            autoResetTask.cancel();
+            autoResetTask = null;
+        }
+        startAutoResetScheduler();
+        
+        long reloadTime = System.currentTimeMillis() - startTime;
+        sender.sendMessage(prefixed(ColorUtil.colorize("&aReload complete! &7(" + reloadTime + "ms)")));
+        sender.sendMessage(prefixed(ColorUtil.colorize("&7- Cleared " + clearedTimers + " reset timer(s)")));
+        sender.sendMessage(prefixed(ColorUtil.colorize("&7- Cleared " + worldCache.size() + " cached world(s)")));
+        sender.sendMessage(prefixed(ColorUtil.colorize("&7- Rebuilt config cache")));
+        
+        return true;
+    }
+    
+    private boolean handleTest(CommandSender sender, String[] args) {
+        if (!sender.hasPermission("rw.admin")) {
+            sender.sendMessage(msg("no_perm"));
+            return true;
+        }
+        
+        if (args.length < 2) {
+            sender.sendMessage(prefixed(ColorUtil.colorize("&eAvailable tests:")));
+            sender.sendMessage(prefixed(ColorUtil.colorize("&7- &ecache &7- Test world and config caching")));
+            sender.sendMessage(prefixed(ColorUtil.colorize("&7- &etimer &7- Display next reset times")));
+            sender.sendMessage(prefixed(ColorUtil.colorize("&7- &eperformance &7- Show performance metrics")));
+            sender.sendMessage(prefixed(ColorUtil.colorize("&7- &etps &7- Check current server TPS")));
+            sender.sendMessage(prefixed(ColorUtil.colorize("&7- &econfig &7- Verify config loading")));
+            return true;
+        }
+        
+        String feature = args[1].toLowerCase();
+        sender.sendMessage(prefixed(ColorUtil.colorize("&eRunning test: &f" + feature)));
+        
+        switch (feature) {
+            case "cache":
+                return testCache(sender);
+            case "timer":
+                return testTimers(sender);
+            case "performance":
+                return testPerformance(sender);
+            case "tps":
+                return testTPS(sender);
+            case "config":
+                return testConfig(sender);
+            default:
+                sender.sendMessage(prefixed(ColorUtil.colorize("&cUnknown test: " + feature)));
+                return true;
+        }
+    }
+    
+    private boolean testCache(CommandSender sender) {
+        sender.sendMessage(prefixed(ColorUtil.colorize("&b=== Cache Test ===")));
+        sender.sendMessage(prefixed(ColorUtil.colorize("&7World Cache: &e" + worldCache.size() + " entries")));
+        worldCache.forEach((name, world) -> {
+            sender.sendMessage(prefixed(ColorUtil.colorize("  &7- &f" + name + " &7(loaded: " + (world != null) + ")")));
+        });
+        sender.sendMessage(prefixed(ColorUtil.colorize("&7Config Cache: &e" + configCache.size() + " entries")));
+        return true;
+    }
+    
+    private boolean testTimers(CommandSender sender) {
+        sender.sendMessage(prefixed(ColorUtil.colorize("&b=== Reset Timer Test ===")));
+        if (resetTimers.isEmpty()) {
+            sender.sendMessage(prefixed(ColorUtil.colorize("&7No active reset timers")));
+        } else {
+            resetTimers.forEach((worldType, epochSec) -> {
+                long remaining = epochSec - System.currentTimeMillis() / 1000;
+                long hours = remaining / 3600;
+                long minutes = (remaining % 3600) / 60;
+                sender.sendMessage(prefixed(ColorUtil.colorize("  &7- &e" + worldType + "&7: " + hours + "h " + minutes + "m")));
+            });
+        }
+        return true;
+    }
+    
+    private boolean testPerformance(CommandSender sender) {
+        sender.sendMessage(prefixed(ColorUtil.colorize("&b=== Performance Metrics ===")));
+        if (operationTimings.isEmpty()) {
+            sender.sendMessage(prefixed(ColorUtil.colorize("&7No metrics recorded yet")));
+        } else {
+            operationTimings.forEach((operation, time) -> {
+                sender.sendMessage(prefixed(ColorUtil.colorize("  &7- &f" + operation + "&7: " + time + "ms")));
+            });
+        }
+        return true;
+    }
+    
+    private boolean testTPS(CommandSender sender) {
+        double tps = getCurrentTps();
+        String color = tps >= 19.5 ? "&a" : tps >= 17.0 ? "&e" : "&c";
+        sender.sendMessage(prefixed(ColorUtil.colorize("&b=== TPS Test ===")));
+        sender.sendMessage(prefixed(ColorUtil.colorize("&7Current TPS: " + color + String.format("%.2f", tps))));
+        sender.sendMessage(prefixed(ColorUtil.colorize("&7Status: " + (tps >= 19.5 ? "&aHealthy" : tps >= 17.0 ? "&eWarning" : "&cCritical"))));
+        return true;
+    }
+    
+    private boolean testConfig(CommandSender sender) {
+        sender.sendMessage(prefixed(ColorUtil.colorize("&b=== Config Test ===")));
+        String[] worldTypes = {"world", "nether", "end"};
+        for (String type : worldTypes) {
+            String worldName = getWorldName(type);
+            boolean autoReset = config.getBoolean(type + ".automated_resets.enabled", false);
+            int interval = config.getInt(type + ".automated_resets.interval", -1);
+            String timeOfDay = config.getString(type + ".automated_resets.time_of_day", "");
+            sender.sendMessage(prefixed(ColorUtil.colorize("  &e" + type + "&7:")));
+            sender.sendMessage(prefixed(ColorUtil.colorize("    &7Name: &f" + worldName)));
+            sender.sendMessage(prefixed(ColorUtil.colorize("    &7Auto-reset: " + (autoReset ? "&aEnabled" : "&cDisabled"))));
+            if (autoReset) {
+                if (!timeOfDay.isEmpty()) {
+                    sender.sendMessage(prefixed(ColorUtil.colorize("    &7Mode: &eTime of day (" + timeOfDay + ")")));
+                } else {
+                    sender.sendMessage(prefixed(ColorUtil.colorize("    &7Mode: &eInterval (" + interval + " hours)")));
+                }
+            }
+        }
         return true;
     }
     

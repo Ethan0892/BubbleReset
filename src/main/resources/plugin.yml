@@ -12,8 +12,8 @@ commands:
     usage: /resource [tp|menu|reset|reload] [world]
     aliases: [rw, resourceworld]
   rwadmin:
-    description: Open BubbleReset admin panel
-    usage: /rwadmin
+    description: Admin commands for BubbleReset
+    usage: /rwadmin [panel|reload|test]
     aliases: [rwa]
 permissions:
   rw.tp:
