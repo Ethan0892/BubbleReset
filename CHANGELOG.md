@@ -4,16 +4,13 @@
 
 ### Maintenance
 - Version bumped to 1.1.3.
-- Introduced code quality tracking for complex methods; no functional changes in this release.
+- Reduced cyclomatic complexity in key hotspots (refactor only; no functional changes).
 
 ### Code Quality
-- Detected high-complexity methods via static analysis and documented refactor plan:
-  - BubbleReset.java [289-319] — complexity 19 (scheduler tick `run()` in `startAutoResetScheduler()`).
-    - Actions: extract time-of-day vs interval scheduling into helpers; reduce nesting with guard clauses; cache repeated config lookups into locals; extract broadcast/reset scheduling into dedicated methods.
-  - ResourceWorldMenu.java [239-301] — complexity 16 (`onInventoryClick(...)`).
-    - Actions: early returns; switch on slot IDs; extract per-button handlers; centralize permission checks and messaging.
-  - ResourceWorldMenu.java [122-185] — complexity 16 (`createCustomSkull(...)`).
-    - Actions: extract skull texture/profile creation; unify meta null/validation handling; isolate texture application.
+- Addressed high-complexity methods identified by static analysis:
+  - BubbleReset.java [289-319] — scheduler tick logic extracted into helper methods.
+  - ResourceWorldMenu.java [239-301] — click handling simplified with action-extraction helpers.
+  - ResourceWorldMenu.java [122-185] — skull texture application split into small helpers.
 
 ---
 

@@ -122,65 +122,82 @@ public class ResourceWorldMenu implements Listener {
     private ItemStack createCustomSkull(String textureBase64) {
         ItemStack skull = new ItemStack(Material.PLAYER_HEAD);
         SkullMeta meta = (SkullMeta) skull.getItemMeta();
-        
-        if (meta != null) {
-            try {
-                String texture = textureBase64 == null ? "" : textureBase64.trim();
-                if (!texture.isEmpty()) {
-                    PlayerProfile profile = Bukkit.createPlayerProfile(UUID.randomUUID(), "CustomHead");
 
-                    // Support either a direct URL, raw JSON, or the common Base64-encoded "textures" value.
-                    if (texture.startsWith("http://") || texture.startsWith("https://")) {
-                        String url = texture.startsWith("http://textures.minecraft.net/")
-                            ? ("https://" + texture.substring("http://".length()))
-                            : texture;
-                        PlayerTextures textures = profile.getTextures();
-                        textures.setSkin(new URL(url));
-                        profile.setTextures(textures);
-                    } else {
-                        String base64 = texture;
-                        if (texture.startsWith("{")) {
-                            base64 = Base64.getEncoder().encodeToString(texture.getBytes(StandardCharsets.UTF_8));
-                        } else {
-                            // Validate base64 early so we can log clearly if it's invalid
-                            Base64.getDecoder().decode(base64);
-                        }
+        if (meta == null) return skull;
 
-                        // Prefer setting the raw base64 "textures" property (most reliable; no external fetch).
-                        // The required API type isn't exposed on Bukkit in all versions, so we use reflection.
-                        boolean applied = applyTexturesPropertyReflectively(profile, base64);
-                        if (!applied) {
-                            // Fallback: decode -> URL -> setSkin (may still work if property API isn't present)
-                            String decoded = new String(Base64.getDecoder().decode(base64), StandardCharsets.UTF_8);
-                            Pattern urlPattern = Pattern.compile("\\\"url\\\":\\\"([^\\\"]+)\\\"");
-                            Matcher matcher = urlPattern.matcher(decoded);
-                            if (matcher.find()) {
-                                String textureUrl = matcher.group(1);
-                                if (textureUrl.startsWith("http://textures.minecraft.net/")) {
-                                    textureUrl = "https://" + textureUrl.substring("http://".length());
-                                }
-                                PlayerTextures textures = profile.getTextures();
-                                textures.setSkin(new URL(textureUrl));
-                                profile.setTextures(textures);
-                            }
-                        }
-                    }
-
-                    meta.setOwnerProfile(profile);
-                }
-            } catch (Exception e) {
-                // MockBukkit doesn't implement parts of the profile/skull API.
-                // Avoid spamming warnings during unit tests while still logging real server failures.
-                String msg = e.getMessage();
-                if (!isMockBukkit() && (msg == null || !msg.equalsIgnoreCase("Not implemented"))) {
-                    plugin.getLogger().warning("Failed to set custom skull texture: " + msg);
-                }
+        try {
+            String texture = normalizeTexture(textureBase64);
+            if (!texture.isEmpty()) {
+                PlayerProfile profile = Bukkit.createPlayerProfile(UUID.randomUUID(), "CustomHead");
+                applyTextureToProfile(profile, texture);
+                meta.setOwnerProfile(profile);
             }
-            
-            skull.setItemMeta(meta);
+        } catch (Exception e) {
+            // MockBukkit doesn't implement parts of the profile/skull API.
+            // Avoid spamming warnings during unit tests while still logging real server failures.
+            String msg = e.getMessage();
+            if (!isMockBukkit() && (msg == null || !msg.equalsIgnoreCase("Not implemented"))) {
+                plugin.getLogger().warning("Failed to set custom skull texture: " + msg);
+            }
         }
+
+        skull.setItemMeta(meta);
         
         return skull;
+    }
+
+    private String normalizeTexture(String textureBase64) {
+        return textureBase64 == null ? "" : textureBase64.trim();
+    }
+
+    private void applyTextureToProfile(PlayerProfile profile, String texture) throws Exception {
+        if (texture.startsWith("http://") || texture.startsWith("https://")) {
+            applySkinUrl(profile, normalizeTexturesUrl(texture));
+            return;
+        }
+
+        String base64 = ensureBase64Textures(texture);
+
+        // Prefer setting the raw base64 "textures" property (most reliable; no external fetch).
+        // The required API type isn't exposed on Bukkit in all versions, so we use reflection.
+        boolean applied = applyTexturesPropertyReflectively(profile, base64);
+        if (applied) return;
+
+        // Fallback: decode -> URL -> setSkin (may still work if property API isn't present)
+        String decoded = new String(Base64.getDecoder().decode(base64), StandardCharsets.UTF_8);
+        String url = extractUrlFromTexturesPayload(decoded);
+        if (url != null && !url.isEmpty()) {
+            applySkinUrl(profile, normalizeTexturesUrl(url));
+        }
+    }
+
+    private void applySkinUrl(PlayerProfile profile, String url) throws Exception {
+        PlayerTextures textures = profile.getTextures();
+        textures.setSkin(new URL(url));
+        profile.setTextures(textures);
+    }
+
+    private String normalizeTexturesUrl(String url) {
+        if (url.startsWith("http://textures.minecraft.net/")) {
+            return "https://" + url.substring("http://".length());
+        }
+        return url;
+    }
+
+    private String ensureBase64Textures(String texture) {
+        if (texture.startsWith("{")) {
+            return Base64.getEncoder().encodeToString(texture.getBytes(StandardCharsets.UTF_8));
+        }
+
+        // Validate base64 early so we can log clearly if it's invalid
+        Base64.getDecoder().decode(texture);
+        return texture;
+    }
+
+    private String extractUrlFromTexturesPayload(String decodedJsonOrPayload) {
+        Pattern urlPattern = Pattern.compile("\\\"url\\\":\\\"([^\\\"]+)\\\"");
+        Matcher matcher = urlPattern.matcher(decodedJsonOrPayload);
+        return matcher.find() ? matcher.group(1) : null;
     }
 
     private boolean isMockBukkit() {
@@ -238,65 +255,70 @@ public class ResourceWorldMenu implements Listener {
     
     @EventHandler
     public void onInventoryClick(InventoryClickEvent event) {
-        if (!(event.getWhoClicked() instanceof Player)) return;
-        
-        Player player = (Player) event.getWhoClicked();
+        Player player = asPlayer(event);
+        if (player == null) return;
 
-        // Identify our menu by holder rather than relying on title formatting
-        Inventory top = event.getView().getTopInventory();
-        if (top == null || !(top.getHolder() instanceof MenuHolder)) return;
-        
+        if (!isResourceWorldMenu(event)) return;
         event.setCancelled(true);
-        
-        ItemStack clicked = event.getCurrentItem();
-        if (clicked == null || clicked.getType() == Material.AIR) return;
-        
-    ItemMeta meta = clicked.getItemMeta();
-    if (meta == null) return;
-        
-    // Get action from PersistentDataContainer
-    NamespacedKey key = new NamespacedKey(plugin, "rw_action");
-    PersistentDataContainer pdc = meta.getPersistentDataContainer();
-    String action = pdc.get(key, PersistentDataType.STRING);
 
-        // Fallback: parse action from lore (helps in environments where PDC is not available)
-        if (action == null) {
-            List<String> lore = meta.getLore();
-            if (lore != null) {
-                for (String line : lore) {
-                    String stripped = ChatColor.stripColor(line);
-                    if (stripped == null) continue;
-                    stripped = stripped.trim();
-                    int idx = stripped.toLowerCase().indexOf("action:");
-                    if (idx >= 0) {
-                        String after = stripped.substring(idx + "action:".length()).trim();
-                        if (!after.isEmpty()) {
-                            action = after.toLowerCase();
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-        
+        String action = extractAction(event.getCurrentItem());
         if (action == null) return;
-        
-        // Check permissions and teleport
-        String permission = "rw.tp";
-        if (!player.hasPermission(permission)) {
+
+        if (!player.hasPermission("rw.tp")) {
             player.sendMessage(pref(plugin, "no_perm"));
             return;
         }
 
-        // Optional per-world teleport toggle
-        if (plugin instanceof BubbleReset) {
-            if (!((BubbleReset) plugin).isTeleportEnabled(action)) {
-                player.sendMessage(pref(plugin, "teleport_disabled"));
-                return;
-            }
+        if (!plugin.isTeleportEnabled(action)) {
+            player.sendMessage(pref(plugin, "teleport_disabled"));
+            return;
         }
-        
+
         teleportToWorld(player, action);
+    }
+
+    private Player asPlayer(InventoryClickEvent event) {
+        return (event.getWhoClicked() instanceof Player) ? (Player) event.getWhoClicked() : null;
+    }
+
+    private boolean isResourceWorldMenu(InventoryClickEvent event) {
+        Inventory top = event.getView() != null ? event.getView().getTopInventory() : null;
+        return top != null && (top.getHolder() instanceof MenuHolder);
+    }
+
+    private String extractAction(ItemStack clicked) {
+        if (clicked == null || clicked.getType() == Material.AIR) return null;
+        ItemMeta meta = clicked.getItemMeta();
+        if (meta == null) return null;
+
+        String action = extractActionFromPdc(meta);
+        if (action != null) return action;
+
+        return extractActionFromLore(meta.getLore());
+    }
+
+    private String extractActionFromPdc(ItemMeta meta) {
+        NamespacedKey key = new NamespacedKey(plugin, "rw_action");
+        PersistentDataContainer pdc = meta.getPersistentDataContainer();
+        String action = pdc.get(key, PersistentDataType.STRING);
+        return (action == null || action.trim().isEmpty()) ? null : action.trim().toLowerCase();
+    }
+
+    private String extractActionFromLore(List<String> lore) {
+        if (lore == null) return null;
+
+        for (String line : lore) {
+            String stripped = ChatColor.stripColor(line);
+            if (stripped == null) continue;
+            stripped = stripped.trim();
+            int idx = stripped.toLowerCase().indexOf("action:");
+            if (idx < 0) continue;
+
+            String after = stripped.substring(idx + "action:".length()).trim();
+            if (!after.isEmpty()) return after.toLowerCase();
+        }
+
+        return null;
     }
     
     private void teleportToWorld(Player player, String worldType) {

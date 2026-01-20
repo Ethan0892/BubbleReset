@@ -292,81 +292,89 @@ public class BubbleReset extends JavaPlugin implements Listener {
         autoResetTask = new BukkitRunnable() {
             @Override
             public void run() {
-                String[] types = new String[]{"overworld", "nether", "end"};
                 long now = System.currentTimeMillis() / 1000L;
+                String[] types = new String[]{"overworld", "nether", "end"};
                 for (int i = 0; i < types.length; i++) {
-                    String type = types[i];
-                    if (!isWorldEnabled(type)) continue;
-                    // Determine interval (seconds)
-
-                    // Fixed time-of-day scheduling (preferred if configured)
-                    String timeOfDay = getResetTimeOfDay(type);
-                    if (timeOfDay != null && !timeOfDay.isEmpty()) {
-                        long nextAt = nextResetAt.getOrDefault(type, 0L);
-                        if (nextAt <= 0L) {
-                            nextAt = computeNextTimeOfDayResetEpochSec(timeOfDay, now);
-                            nextResetAt.put(type, nextAt);
-                            // Track a "last" time to keep existing tooling stable
-                            if (resetTimers.getOrDefault(type, 0L) == 0L) resetTimers.put(type, now);
-                        }
-
-                        long remaining = nextAt - now;
-                        if (remaining <= announceBeforeSec && remaining > 0L) {
-                            String warn = config.getString("messages.reset-warning", "&eResource world will reset in %time%!")
-                                .replace("%time%", formatTime(remaining));
-                            Bukkit.broadcastMessage(prefixed(warn));
-                        }
-
-                        if (now >= nextAt) {
-                            String worldName = getWorldName(type);
-                            if (worldName != null && Bukkit.getWorld(worldName) != null) {
-                                new BukkitRunnable() {
-                                    @Override
-                                    public void run() {
-                                        resetWorld(worldName, type);
-                                    }
-                                }.runTaskLater(BubbleReset.this, i * 200L); // stagger by 10s per world
-                            }
-                            // Mark last reset time
-                            resetTimers.put(type, now);
-                            // Schedule the next occurrence
-                            nextResetAt.put(type, computeNextTimeOfDayResetEpochSec(timeOfDay, now + 1L));
-                        }
-                        continue;
-                    }
-
-                    // Interval-based scheduling (fallback)
-                    long intervalSec = getResetIntervalSeconds(type);
-                    if (intervalSec <= 0) intervalSec = globalIntervalSec;
-                    if (intervalSec <= 0) continue; // no scheduler
-                    long last = resetTimers.getOrDefault(type, 0L);
-                    if (last == 0L) {
-                        // Initialize on first pass and skip actions to avoid instant reset after startup
-                        resetTimers.put(type, now);
-                        continue;
-                    }
-                    long elapsed = now - last;
-                    long warnAt = Math.max(0L, intervalSec - announceBeforeSec);
-                    if (elapsed >= warnAt && elapsed < intervalSec) {
-                        String warn = config.getString("messages.reset-warning", "&eResource world will reset in %time%!")
-                            .replace("%time%", formatTime(intervalSec - elapsed));
-                        Bukkit.broadcastMessage(prefixed(warn));
-                    }
-                    if (elapsed >= intervalSec) {
-                        String worldName = getWorldName(type);
-                        if (worldName != null && Bukkit.getWorld(worldName) != null) {
-                            new BukkitRunnable() {
-                                @Override
-                                public void run() {
-                                    resetWorld(worldName, type);
-                                }
-                            }.runTaskLater(BubbleReset.this, i * 200L); // stagger by 10s per world
-                        }
-                        resetTimers.put(type, now);
-                    }
+                    handleAutoResetTick(types[i], i, now, announceBeforeSec, globalIntervalSec);
                 }
             }
         }.runTaskTimer(this, 1200L, 1200L);
+    }
+
+    private void handleAutoResetTick(String type, int index, long nowEpochSec, long announceBeforeSec, long globalIntervalSec) {
+        if (!isWorldEnabled(type)) return;
+
+        String timeOfDay = getResetTimeOfDay(type);
+        if (timeOfDay != null && !timeOfDay.isEmpty()) {
+            handleTimeOfDayReset(type, index, nowEpochSec, announceBeforeSec, timeOfDay);
+            return;
+        }
+
+        handleIntervalReset(type, index, nowEpochSec, announceBeforeSec, globalIntervalSec);
+    }
+
+    private void handleTimeOfDayReset(String type, int index, long nowEpochSec, long announceBeforeSec, String timeOfDay) {
+        long nextAt = nextResetAt.getOrDefault(type, 0L);
+        if (nextAt <= 0L) {
+            nextAt = computeNextTimeOfDayResetEpochSec(timeOfDay, nowEpochSec);
+            nextResetAt.put(type, nextAt);
+            // Track a "last" time to keep existing tooling stable
+            if (resetTimers.getOrDefault(type, 0L) == 0L) resetTimers.put(type, nowEpochSec);
+        }
+
+        long remaining = nextAt - nowEpochSec;
+        if (remaining <= announceBeforeSec && remaining > 0L) {
+            broadcastResetWarning(remaining);
+        }
+
+        if (nowEpochSec < nextAt) return;
+
+        scheduleResetIfWorldLoaded(type, index);
+        resetTimers.put(type, nowEpochSec);
+        nextResetAt.put(type, computeNextTimeOfDayResetEpochSec(timeOfDay, nowEpochSec + 1L));
+    }
+
+    private void handleIntervalReset(String type, int index, long nowEpochSec, long announceBeforeSec, long globalIntervalSec) {
+        long intervalSec = getResetIntervalSeconds(type);
+        if (intervalSec <= 0) intervalSec = globalIntervalSec;
+        if (intervalSec <= 0) return;
+
+        long last = resetTimers.getOrDefault(type, 0L);
+        if (last == 0L) {
+            // Initialize on first pass and skip actions to avoid instant reset after startup
+            resetTimers.put(type, nowEpochSec);
+            return;
+        }
+
+        long elapsed = nowEpochSec - last;
+        long warnAt = Math.max(0L, intervalSec - announceBeforeSec);
+        if (elapsed >= warnAt && elapsed < intervalSec) {
+            broadcastResetWarning(intervalSec - elapsed);
+        }
+
+        if (elapsed < intervalSec) return;
+
+        scheduleResetIfWorldLoaded(type, index);
+        resetTimers.put(type, nowEpochSec);
+    }
+
+    private void broadcastResetWarning(long remainingSeconds) {
+        String warn = config.getString("messages.reset-warning", "&eResource world will reset in %time%!")
+            .replace("%time%", formatTime(remainingSeconds));
+        Bukkit.broadcastMessage(prefixed(warn));
+    }
+
+    private void scheduleResetIfWorldLoaded(String type, int index) {
+        String worldName = getWorldName(type);
+        if (worldName == null) return;
+        if (Bukkit.getWorld(worldName) == null) return;
+
+        new BukkitRunnable() {
+            @Override
+            public void run() {
+                resetWorld(worldName, type);
+            }
+        }.runTaskLater(BubbleReset.this, index * 200L); // stagger by 10s per world
     }
 
     private String getResetTimeOfDay(String type) {
