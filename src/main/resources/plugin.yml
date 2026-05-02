@@ -1,9 +1,9 @@
 name: BubbleReset
 main: com.bubblecraft.bubblereset.BubbleReset
 version: ${project.version}
-description: High-Performance Resource World plugin for Minecraft 1.19-1.21
-author: eirvi
-api-version: 1.19
+description: High-Performance Resource World plugin for Paper 26.1.2+
+author: Ξthan
+api-version: '26.1.2'
 depend: []
 softdepend: [PlaceholderAPI]
 commands:

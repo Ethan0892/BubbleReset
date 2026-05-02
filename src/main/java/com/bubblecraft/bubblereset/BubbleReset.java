@@ -735,12 +735,14 @@ public class BubbleReset extends JavaPlugin implements Listener {
                 world.setViewDistance(tempViewDistance);
             }
             
-            // Teleport all players out of the world
+            // Teleport all players out of the world using async teleport (Paper API)
             Location mainWorldSpawn = getMainSpawn();
             int moved = 0;
             for (Player player : world.getPlayers()) {
-                player.teleport(mainWorldSpawn);
-                player.sendMessage(msg("teleported_message"));
+                final Player p = player;
+                p.teleportAsync(mainWorldSpawn).thenAccept(success -> {
+                    if (success) p.sendMessage(msg("teleported_message"));
+                });
                 moved++;
             }
             if (moved > 0) Bukkit.broadcastMessage(msgOrDefault("teleported_players", "&aTeleported all the players back to spawn!"));
@@ -792,8 +794,19 @@ public class BubbleReset extends JavaPlugin implements Listener {
         if (newWorld != null) {
             // Add to cache
             worldCache.put(worldName, newWorld);
-            
+
             setupWorld(newWorld, worldType);
+
+            // Pre-warm spawn area chunks so the world is ready when players arrive
+            int spawnPreloadRadius = config.getInt("performance.spawn-preload-radius", 3);
+            Location spawnLoc = newWorld.getSpawnLocation();
+            int spawnCX = spawnLoc.getBlockX() >> 4;
+            int spawnCZ = spawnLoc.getBlockZ() >> 4;
+            for (int cx = -spawnPreloadRadius; cx <= spawnPreloadRadius; cx++) {
+                for (int cz = -spawnPreloadRadius; cz <= spawnPreloadRadius; cz++) {
+                    newWorld.getChunkAtAsync(spawnCX + cx, spawnCZ + cz);
+                }
+            }
 
             // Copy datapacks (custom structures/loot) if configured
             applyDatapacksIfEnabled(newWorld, worldType);
@@ -963,12 +976,21 @@ public class BubbleReset extends JavaPlugin implements Listener {
     }
     
     private void deleteWorldFolder(File folder) {
-        if (folder.isDirectory()) {
-            for (File file : folder.listFiles()) {
-                deleteWorldFolder(file);
-            }
+        if (!folder.exists()) return;
+        try {
+            // Walk in reverse order so files are deleted before their parent directories
+            Files.walk(folder.toPath())
+                .sorted(java.util.Comparator.reverseOrder())
+                .forEach(path -> {
+                    try {
+                        Files.delete(path);
+                    } catch (IOException e) {
+                        getLogger().warning("Could not delete " + path + ": " + e.getMessage());
+                    }
+                });
+        } catch (IOException e) {
+            getLogger().warning("Failed to walk world folder for deletion: " + folder.getPath() + ": " + e.getMessage());
         }
-        folder.delete();
     }
     
     @EventHandler
@@ -1266,25 +1288,20 @@ public class BubbleReset extends JavaPlugin implements Listener {
      */
     private void preloadChunksAsync(Location location) {
         if (location == null || location.getWorld() == null) return;
-        
+
         World world = location.getWorld();
         int chunkX = location.getBlockX() >> 4;
         int chunkZ = location.getBlockZ() >> 4;
         int radius = config.getInt("performance.preload-chunk-radius", 2);
-        
-        CompletableFuture.runAsync(() -> {
-            for (int x = -radius; x <= radius; x++) {
-                for (int z = -radius; z <= radius; z++) {
-                    final int cx = chunkX + x;
-                    final int cz = chunkZ + z;
-                    // Schedule chunk load on main thread
-                    Bukkit.getScheduler().runTask(this, () -> {
-                        if (world.isChunkLoaded(cx, cz)) return;
-                        world.getChunkAtAsync(cx, cz);
-                    });
+
+        // getChunkAtAsync already handles its own threading — no extra wrapper needed
+        for (int x = -radius; x <= radius; x++) {
+            for (int z = -radius; z <= radius; z++) {
+                if (!world.isChunkLoaded(chunkX + x, chunkZ + z)) {
+                    world.getChunkAtAsync(chunkX + x, chunkZ + z);
                 }
             }
-        });
+        }
     }
     
     /**

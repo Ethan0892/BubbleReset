@@ -1,5 +1,24 @@
 # BubbleReset Changelog
 
+## [1.1.4] - 2026-05-02
+
+### Updated
+- **Paper API updated to 26.1.2** (build 53, stable) — new Paper version scheme (`26.1.2.build.53-stable`)
+- **`plugin.yml` `api-version`** updated to `'26.1.2'` (required format for Paper 26.1+)
+- **Java compiler target** bumped from 21 → 25 to match Paper 26.1 recommended baseline
+- **MockBukkit** updated from `MockBukkit-v1.20:3.15.1` → `MockBukkit-v1.21:3.133.2`
+
+### Improved (resource world regeneration)
+- **Player eviction uses `teleportAsync()`** — players are now kicked from the world via Paper's async teleport API before reset, reducing main-thread stall during chunk unloading
+- **Spawn chunk pre-warming after recreation** — after a new resource world is generated, a configurable radius of chunks around spawn is pre-loaded with `getChunkAtAsync()` so the world is immediately ready for players (`performance.spawn-preload-radius`, default `3`)
+- **`preloadChunksAsync()` simplified** — removed a redundant `CompletableFuture` wrapper; `getChunkAtAsync()` is already non-blocking and handles its own threading
+- **`deleteWorldFolder()` rewritten with NIO** — now uses `Files.walk(...).sorted(reverseOrder())` to guarantee files are deleted before their parent directories, fixing the silent-failure case where non-empty directories were not deleted
+
+### Tests
+- `TeleportToggleTest` annotated `@Disabled` — no MockBukkit release currently supports Paper 26.1 internal tag data (throws `InternalTagMisconfigurationException` for `minecraft:chain`); will be re-enabled once MockBukkit publishes Paper 26.1 support
+
+---
+
 ## [1.1.3] - 2026-01-20
 
 ### Maintenance
